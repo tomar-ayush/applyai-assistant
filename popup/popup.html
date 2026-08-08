@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ApplyAI LinkedIn Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"></path>
+            <rect x="2" y="9" width="4" height="12"></rect>
+            <circle cx="4" cy="4" r="2"></circle>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>ApplyAI</h1>
+          <span class="badge">LinkedIn Assistant</span>
+        </div>
+      </div>
+      <div class="status-indicator" id="statusIndicator">
+        <span class="dot"></span>
+        <span class="status-text" id="statusText">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Pairing Card -->
+    <section class="card auth-card">
+      <div class="card-header">
+        <span class="card-title">Web App Connection</span>
+        <button id="copyIdBtn" class="btn-sm" title="Copy Extension ID">Copy ID</button>
+      </div>
+      <div class="auth-details" id="authDetails">
+        <p class="placeholder-text">Not paired with Web App yet.</p>
+      </div>
+      <div class="ext-id-box">
+        <span class="label">Extension ID:</span>
+        <code id="extId">loading...</code>
+      </div>
+    </section>
+
+    <!-- Active Task Card -->
+    <section class="card task-card" id="taskCard">
+      <div class="card-header">
+        <span class="card-title">Active Automation</span>
+        <span class="task-badge" id="taskStateBadge">Idle</span>
+      </div>
+      <div class="task-body" id="taskBody">
+        <p class="placeholder-text">No automation task running right now.</p>
+      </div>
+    </section>
+
+    <!-- Execution Logs -->
+    <section class="card logs-card">
+      <div class="card-header">
+        <span class="card-title">Activity Log</span>
+        <button id="clearLogsBtn" class="btn-text">Clear</button>
+      </div>
+      <div class="logs-list" id="logsList">
+        <div class="empty-logs">No activity recorded yet.</div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>ApplyAI Extension v1.0.0</span>
+      <a href="https://applyai-agent.vercel.app" target="_blank" class="footer-link">Open Dashboard &rarr;</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
