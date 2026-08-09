@@ -1,6 +1,6 @@
 // logger.js - Global logger configuration
 // Set to true to see debug logs in the console
-const APPLYAI_DEBUG_MODE = false; 
+const APPLYAI_DEBUG_MODE = true; 
 
 const Logger = {
   debug: (...args) => { if (APPLYAI_DEBUG_MODE) console.log(...args); },

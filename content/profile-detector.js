@@ -207,38 +207,90 @@ async function openConnectModalViaMore(followBtn, { alreadyFollowing = false, mo
  * @param {number} timeoutMs
  * @returns {Promise<{ confirmed: boolean, reason: string }>}
  */
-async function waitForSendOrClose(timeoutMs = 45000) {
+async function waitForSendOrClose(timeoutMs = 1200000) {
   const deadline = Date.now() + timeoutMs;
   Logger.debug('[DEBUG] Waiting for Send or modal close...');
 
+  // Track whether the modal was open at some point so we can detect it closing
+  let modalWasOpen = true;
+
   while (Date.now() < deadline) {
-    // Check toast in both document and shadow root
+    // ----- Strategy 1: Detect "Invitation sent" toast anywhere on page -----
+    // LinkedIn renders toasts as divs/spans, not buttons, so we scan all text
     const sr = _dom.getInteropShadowRoot();
-    const toast = _dom.findMatchingButton(document, _SEL.toastTextPattern) ||
-                  (sr ? _dom.findMatchingButton(sr, _SEL.toastTextPattern) : null);
-    if (toast) {
+    if (checkForInvitationToast(document) || (sr && checkForInvitationToast(sr))) {
       Logger.debug('[DEBUG] "Invitation sent" toast detected!');
       return { confirmed: true, reason: 'toast' };
     }
 
-    // Check if modal is still open
+    // ----- Strategy 2: Modal closed → poll profile state with patience -----
     let modalOpen = false;
     for (const sel of _SEL.modalCSS) {
       if (_dom.querySelectorInShadow(sel)) { modalOpen = true; break; }
     }
-    if (!modalOpen) {
-      await _human.sleep(1000);
-      const state = detectProfileState();
-      if (['pending', 'already_connected'].includes(state.state)) {
-        Logger.debug('[DEBUG] Modal closed, profile updated to:', state.state);
-        return { confirmed: true, reason: 'modal_closed_success' };
+
+    if (modalWasOpen && !modalOpen) {
+      // Modal just closed — give LinkedIn 3 seconds to update the DOM
+      Logger.debug('[DEBUG] Modal closed. Waiting for LinkedIn DOM to update...');
+      for (let retry = 0; retry < 6; retry++) {
+        await _human.sleep(500);
+
+        // Re-check toast after each wait
+        if (checkForInvitationToast(document) || (sr && checkForInvitationToast(sr))) {
+          Logger.debug('[DEBUG] Toast found after modal close!');
+          return { confirmed: true, reason: 'toast_after_close' };
+        }
+
+        const state = detectProfileState();
+        if (['pending', 'already_connected'].includes(state.state)) {
+          Logger.debug('[DEBUG] Profile updated to:', state.state);
+          return { confirmed: true, reason: 'profile_state_' + state.state };
+        }
       }
+
+      // If we still can't confirm, assume success if the modal closed
+      // (LinkedIn sometimes doesn't update the button fast enough)
+      Logger.debug('[DEBUG] Modal closed but profile state unclear. Assuming success.');
+      return { confirmed: true, reason: 'modal_closed_assumed_success' };
+    }
+
+    if (modalOpen) {
+      modalWasOpen = true;
     }
 
     await _human.sleep(800);
   }
 
   return { confirmed: false, reason: 'timed_out' };
+}
+
+/**
+ * Scan a root node for any element containing "invitation sent" or "request sent" text.
+ * LinkedIn renders toasts as divs/spans, not buttons.
+ */
+function checkForInvitationToast(root) {
+  if (!root) return false;
+
+  // 1. Check artdeco toast containers directly
+  const toastContainers = root.querySelectorAll
+    ? Array.from(root.querySelectorAll('.artdeco-toast-item, [data-test-artdeco-toast], .artdeco-toast-message'))
+    : [];
+  for (const el of toastContainers) {
+    if (_SEL.toastTextPattern.test(el.textContent || '')) return true;
+  }
+
+  // 2. Broad text search — check all visible elements for the toast text
+  const allElements = root.querySelectorAll
+    ? Array.from(root.querySelectorAll('div, span, p, li'))
+    : [];
+  for (const el of allElements) {
+    const text = (el.textContent || '').trim();
+    if (text.length > 0 && text.length < 100 && _SEL.toastTextPattern.test(text)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------

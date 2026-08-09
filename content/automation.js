@@ -115,7 +115,7 @@
 
     // Wait for user action (Send button click)
     await reportProgress('waiting_for_user_action');
-    const result = await profile.waitForSendOrClose(45000);
+    const result = await profile.waitForSendOrClose(1200000);
     if (result.confirmed) {
       Logger.debug('[DEBUG] Task completed successfully!');
       await reportProgress('completed');

@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const authDetails = document.getElementById('authDetails');
   const extIdEl = document.getElementById('extId');
   const copyIdBtn = document.getElementById('copyIdBtn');
-  const taskStateBadge = document.getElementById('taskStateBadge');
-  const taskBody = document.getElementById('taskBody');
+  const taskCountBadge = document.getElementById('taskCountBadge');
+  const tasksList = document.getElementById('tasksList');
   const logsList = document.getElementById('logsList');
   const clearLogsBtn = document.getElementById('clearLogsBtn');
 
@@ -56,23 +56,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         authDetails.innerHTML = `<p class="placeholder-text">Open ApplyAI web dashboard to pair.</p>`;
       }
 
-      // 2. Render Active Task
-      if (response.activeTask) {
-        const task = response.activeTask;
-        taskStateBadge.textContent = task.state || 'Running';
-        taskStateBadge.className = `task-badge ${getBadgeClass(task.state)}`;
+      // 2. Render Active Tasks
+      const tasks = response.activeTasks || [];
+      taskCountBadge.textContent = tasks.length;
+      taskCountBadge.className = `task-count-badge ${tasks.length > 0 ? 'active' : ''}`;
 
-        taskBody.innerHTML = `
-          <div class="task-info">
-            <span><strong>Task ID:</strong> ${task.task_id}</span>
-            <span class="url">${task.linkedin_url}</span>
-            <span><strong>Phase:</strong> ${task.state}</span>
-          </div>
-        `;
+      if (tasks.length === 0) {
+        tasksList.innerHTML = `<p class="placeholder-text">No automation tasks running right now.</p>`;
       } else {
-        taskStateBadge.textContent = 'Idle';
-        taskStateBadge.className = 'task-badge';
-        taskBody.innerHTML = `<p class="placeholder-text">No automation running right now.</p>`;
+        tasksList.innerHTML = tasks.map((task) => `
+          <div class="task-item">
+            <div class="task-item-header">
+              <span class="task-name">${escapeHtml(task.referral_name || 'Task')}</span>
+              <span class="task-badge ${getBadgeClass(task.state)}">${escapeHtml(task.state || 'init')}</span>
+            </div>
+            <span class="task-url">${escapeHtml(task.linkedin_url || '')}</span>
+          </div>
+        `).join('');
       }
 
       // 3. Render Logs

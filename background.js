@@ -2,10 +2,93 @@ importScripts('logger.js');
 
 // background.js - ApplyAI LinkedIn Extension Service Worker
 
-let activeTask = null;
-let activeTabId = null;
+// Task tracking: each tab gets its own task object
+const tasksByTabId = new Map();   // tabId → task (bound once tab is known)
+const pendingTasks = [];          // tasks awaiting tab assignment (race-condition buffer)
+let automationWindowId = null;
 
-// Log helper to save execution logs in storage and print debug console output
+// -----------------------------------------------------------------------------
+// Window Management for Background Automation
+// -----------------------------------------------------------------------------
+function getOrCreateAutomationWindow(url, callback) {
+  if (automationWindowId !== null) {
+    chrome.windows.get(automationWindowId, { populate: true }, (win) => {
+      if (chrome.runtime.lastError || !win) {
+        automationWindowId = null;
+        createAutomationWindow(url, callback);
+      } else {
+        chrome.tabs.create({ windowId: win.id, url: url, active: true }, (tab) => {
+          callback(tab, win.id);
+        });
+      }
+    });
+  } else {
+    createAutomationWindow(url, callback);
+  }
+}
+
+function createAutomationWindow(url, callback) {
+  chrome.windows.create({ url: url, focused: false, type: 'normal' }, (win) => {
+    automationWindowId = win.id;
+    const tab = win.tabs && win.tabs.length > 0 ? win.tabs[0] : null;
+    if (tab) {
+      callback(tab, win.id);
+    } else {
+      chrome.tabs.query({ windowId: win.id }, (tabs) => {
+        callback(tabs?.[0] || null, win.id);
+      });
+    }
+  });
+}
+
+chrome.windows.onRemoved.addListener((winId) => {
+  if (winId === automationWindowId) {
+    Logger.debug('[DEBUG] Automation window closed:', winId);
+    automationWindowId = null;
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Task Lookup - handles the race between tab creation and content script load
+// -----------------------------------------------------------------------------
+
+/** Normalize a LinkedIn URL for comparison (strip protocol, query, trailing slash). */
+function normalizeLinkedInUrl(url) {
+  if (!url) return '';
+  return url.replace(/^https?:\/\//, '').replace(/[?#].*$/, '').replace(/\/$/, '').toLowerCase();
+}
+
+/** Bind a task to a tab (move from pending → active map). */
+function bindTaskToTab(task, tabId) {
+  task.tabId = tabId;
+  tasksByTabId.set(tabId, task);
+  const idx = pendingTasks.indexOf(task);
+  if (idx >= 0) pendingTasks.splice(idx, 1);
+}
+
+/** Find the task for a given tab. Checks the map first, then pending list by URL. */
+function findTaskForTab(tabId, tabUrl) {
+  // 1. Direct map lookup (happy path — tab callback already ran)
+  if (tasksByTabId.has(tabId)) return tasksByTabId.get(tabId);
+
+  // 2. Race-condition path: content script loaded before tab callback
+  //    Match by LinkedIn profile URL from the pending list
+  const normalizedTabUrl = normalizeLinkedInUrl(tabUrl);
+  for (const task of pendingTasks) {
+    const normalizedTaskUrl = normalizeLinkedInUrl(task.linkedin_url);
+    if (normalizedTaskUrl && normalizedTabUrl.includes(normalizedTaskUrl.replace(/^(www\.)?/, ''))) {
+      bindTaskToTab(task, tabId);
+      Logger.debug('[DEBUG] Bound pending task to tab via URL match:', task.task_id, tabId);
+      return task;
+    }
+  }
+
+  return null;
+}
+
+// -----------------------------------------------------------------------------
+// Logging
+// -----------------------------------------------------------------------------
 async function appendLog(step, details = {}) {
   const timestamp = new Date().toISOString();
   const entry = { timestamp, step, ...details };
@@ -22,7 +105,9 @@ async function appendLog(step, details = {}) {
   }
 }
 
-// Relay completion helper - notifies Frontend Web App tabs via bridge
+// -----------------------------------------------------------------------------
+// Frontend Relay
+// -----------------------------------------------------------------------------
 function notifyFrontendTaskComplete(taskData) {
   Logger.debug('[DEBUG] Relaying task completion to Frontend Web App:', taskData);
   chrome.tabs.query({ url: ['http://localhost/*/*', 'http://127.0.0.1/*/*', 'https://applyai-agent.vercel.app/*'] }, (tabs) => {
@@ -31,14 +116,15 @@ function notifyFrontendTaskComplete(taskData) {
         type: 'APPLYAI_TASK_COMPLETE',
         payload: taskData,
       }, () => {
-        // Ignore error if tab is closed or bridge not loaded
         if (chrome.runtime.lastError) { /* ignore */ }
       });
     }
   });
 }
 
-// Helper to handle incoming task dispatch
+// -----------------------------------------------------------------------------
+// Incoming Message Helpers
+// -----------------------------------------------------------------------------
 function handleIncomingTask(payload, sendResponse) {
   Logger.debug('[DEBUG] Processing incoming task payload:', payload);
 
@@ -56,7 +142,6 @@ function handleIncomingTask(payload, sendResponse) {
   });
 }
 
-// Helper to handle auth sync
 function handleAuthSync(request, sendResponse) {
   const { token, userId, userEmail, callbackUrl } = request;
   Logger.debug('[DEBUG] Syncing auth credentials:', { userId, userEmail });
@@ -74,18 +159,13 @@ function handleAuthSync(request, sendResponse) {
 }
 
 // -----------------------------------------------------------------------------
-// External Message Listener (from externally_connectable web pages)
+// External Message Listener
 // -----------------------------------------------------------------------------
 chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => {
-  Logger.debug('[DEBUG] External message received via externally_connectable:', request, 'from:', sender?.origin);
+  Logger.debug('[DEBUG] External message received:', request, 'from:', sender?.origin);
 
   if (request.type === 'PING' || request.type === 'APPLYAI_PING') {
-    sendResponse({
-      status: 'ok',
-      installed: true,
-      version: '1.0.0',
-      activeTask: activeTask ? { id: activeTask.task_id, state: activeTask.state } : null,
-    });
+    sendResponse({ status: 'ok', installed: true, version: '1.0.0' });
     return true;
   }
 
@@ -95,8 +175,7 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
   }
 
   if (request.type === 'LINKEDIN_TASK' || request.type === 'EXECUTE_LINKEDIN_TASK' || request.type === 'APPLYAI_LINKEDIN_TASK') {
-    const payload = request.payload || request;
-    handleIncomingTask(payload, sendResponse);
+    handleIncomingTask(request.payload || request, sendResponse);
     return true;
   }
 
@@ -105,14 +184,13 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
 });
 
 // -----------------------------------------------------------------------------
-// Internal Message Listener (from content/bridge.js, content/linkedin.js & popup)
+// Internal Message Listener
 // -----------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  Logger.debug('[DEBUG] Internal runtime message received:', request, 'from tab:', sender?.tab?.id);
+  Logger.debug('[DEBUG] Internal message received:', request, 'from tab:', sender?.tab?.id);
 
   if (request.type === 'APPLYAI_LINKEDIN_TASK' || request.type === 'LINKEDIN_TASK' || request.type === 'EXECUTE_LINKEDIN_TASK') {
-    const payload = request.payload || request;
-    handleIncomingTask(payload, sendResponse);
+    handleIncomingTask(request.payload || request, sendResponse);
     return true;
   }
 
@@ -126,15 +204,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // MAIN_WORLD_CLICK: Execute a click in LinkedIn's own JS context (MAIN world)
-  // so that Ember's SPA router intercepts it properly. Content scripts run in an
-  // isolated world where element.click() on <a> tags triggers browser-default
-  // navigation BEFORE Ember can call preventDefault(). In the MAIN world, Ember's
-  // internal component handlers catch the click and open the modal.
+  // MAIN_WORLD_CLICK
   if (request.type === 'MAIN_WORLD_CLICK') {
     const { selector } = request;
     const tabId = sender?.tab?.id;
-    Logger.debug(`[DEBUG] MAIN_WORLD_CLICK requested for selector: "${selector}" on tab: ${tabId}`);
+    Logger.debug(`[DEBUG] MAIN_WORLD_CLICK for selector: "${selector}" on tab: ${tabId}`);
 
     if (!tabId || !selector) {
       sendResponse({ success: false, error: 'Missing tabId or selector' });
@@ -145,19 +219,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       target: { tabId },
       world: 'MAIN',
       func: (sel) => {
-        // Check regular DOM first, then the interop shadow root
         let el = document.querySelector(sel);
         if (!el) {
           const host = document.querySelector('#interop-outlet');
-          if (host?.shadowRoot) {
-            el = host.shadowRoot.querySelector(sel);
-          }
+          if (host?.shadowRoot) el = host.shadowRoot.querySelector(sel);
         }
         if (el) {
           el.click();
           return { clicked: true, tag: el.tagName, text: el.innerText?.slice(0, 50) };
         }
-        return { clicked: false, error: 'Element not found for selector: ' + sel };
+        return { clicked: false, error: 'Element not found: ' + sel };
       },
       args: [selector],
     }).then((results) => {
@@ -169,57 +240,71 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false, error: err.message });
     });
 
-    return true; // async response
+    return true;
   }
 
+  // CONTENT_SCRIPT_READY — the content script asks "do you have a task for me?"
   if (request.type === 'CONTENT_SCRIPT_READY') {
-    Logger.debug('[DEBUG] Content script queried for active task on tab:', sender?.tab?.id, 'url:', sender?.tab?.url);
-    const isLinkedInProfileTab = sender?.tab?.url && (sender.tab.url.includes('/in/') || sender.tab.url.includes('linkedin.com'));
-    if (activeTask && (sender?.tab?.id === activeTabId || isLinkedInProfileTab)) {
-      activeTabId = sender?.tab?.id;
-      Logger.debug('[DEBUG] Delivering active task to content script:', activeTask);
-      sendResponse({ task: activeTask });
+    const tabId = sender?.tab?.id;
+    const tabUrl = sender?.tab?.url || '';
+    Logger.debug('[DEBUG] CONTENT_SCRIPT_READY from tab:', tabId, 'url:', tabUrl);
+
+    const task = findTaskForTab(tabId, tabUrl);
+    if (task) {
+      Logger.debug('[DEBUG] Delivering task to tab:', tabId, 'task:', task.task_id);
+      sendResponse({ task });
     } else {
-      Logger.debug('[DEBUG] No active automation task for tab:', sender?.tab?.id);
+      Logger.debug('[DEBUG] No task for tab:', tabId);
       sendResponse({ task: null });
     }
     return true;
   }
 
+  // TASK_PROGRESS — content script reports automation state changes
   if (request.type === 'TASK_PROGRESS') {
     const { state, error, details } = request;
-    Logger.debug(`[DEBUG] Task Progress Update [${state}]:`, { error, details });
+    const tabId = sender?.tab?.id;
+    Logger.debug(`[DEBUG] TASK_PROGRESS [${state}] from tab ${tabId}:`, { error, details });
 
-    if (activeTask) {
-      activeTask.state = state;
-      activeTask.lastUpdated = new Date().toISOString();
-      if (error) activeTask.error = error;
+    const task = tabId ? tasksByTabId.get(tabId) : null;
+    if (task) {
+      task.state = state;
+      task.lastUpdated = new Date().toISOString();
+      if (error) task.error = error;
     }
 
     const terminalStates = [
-      'completed',
-      'already_connected',
-      'already_pending',
-      'timed_out_waiting_for_user_action',
-      'closed_without_send',
-      'failed',
+      'completed', 'already_connected', 'already_pending',
+      'timed_out_waiting_for_user_action', 'closed_without_send', 'failed',
     ];
 
     if (terminalStates.includes(state)) {
-      handleTaskCompletion(state, error);
+      handleTaskCompletion(tabId, state, error);
     }
 
     sendResponse({ ack: true });
     return true;
   }
 
+  // POPUP_GET_STATUS
   if (request.type === 'POPUP_GET_STATUS') {
     chrome.storage.local.get(['authToken', 'userId', 'userEmail', 'logs'], (data) => {
+      const activeTasks = [];
+      for (const [tid, t] of tasksByTabId) {
+        activeTasks.push({
+          task_id: t.task_id,
+          state: t.state,
+          referral_name: t.referral_name || null,
+          linkedin_url: t.linkedin_url || null,
+          tabId: tid,
+        });
+      }
       sendResponse({
         isPaired: Boolean(data.authToken),
         userId: data.userId || null,
         userEmail: data.userEmail || null,
-        activeTask,
+        activeTask: activeTasks.length > 0 ? activeTasks[activeTasks.length - 1] : null,
+        activeTasks,
         logs: data.logs || [],
       });
     });
@@ -235,11 +320,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // -----------------------------------------------------------------------------
-// Task Execution Orchestrator
+// Task Execution
 // -----------------------------------------------------------------------------
 async function startLinkedInTask(payload) {
   const taskId = payload.task_id || `task_${Date.now()}`;
-  activeTask = {
+  const task = {
     task_id: taskId,
     linkedin_url: payload.linkedin_url,
     message: payload.message || '',
@@ -251,32 +336,43 @@ async function startLinkedInTask(payload) {
     startedAt: new Date().toISOString(),
   };
 
-  Logger.debug('[DEBUG] Starting LinkedIn automation task:', activeTask);
+  // Push to pending list immediately (synchronous) so content script can find it
+  // even if it loads before the chrome.tabs.create callback fires
+  pendingTasks.push(task);
+
+  Logger.debug('[DEBUG] Starting LinkedIn automation task:', task);
   appendLog('task_started', { taskId, url: payload.linkedin_url });
 
-  chrome.tabs.create({ url: payload.linkedin_url, active: true }, (tab) => {
-    activeTabId = tab.id;
-    Logger.debug(`[DEBUG] Created target LinkedIn tab ID ${tab.id} for URL: ${payload.linkedin_url}`);
-    appendLog('automation_tab_created', { tabId: tab.id, url: payload.linkedin_url });
+  getOrCreateAutomationWindow(payload.linkedin_url, (tab, winId) => {
+    if (tab) {
+      bindTaskToTab(task, tab.id);
+      Logger.debug(`[DEBUG] Tab ${tab.id} in window ${winId} for: ${payload.linkedin_url}`);
+      appendLog('automation_tab_created', { tabId: tab.id, windowId: winId, url: payload.linkedin_url });
+    } else {
+      Logger.error('[DEBUG] Failed to obtain tab for automation window');
+    }
   });
 }
 
-async function handleTaskCompletion(finalState, error = null) {
-  if (!activeTask) return;
+// -----------------------------------------------------------------------------
+// Task Completion
+// -----------------------------------------------------------------------------
+async function handleTaskCompletion(tabId, finalState, error = null) {
+  const task = tabId ? tasksByTabId.get(tabId) : null;
+  if (!task) return;
 
-  const current = activeTask;
-  Logger.debug(`[DEBUG] Task completed with state "${finalState}":`, { taskId: current.task_id, error });
-  appendLog('task_finished', { taskId: current.task_id, state: finalState, error });
+  Logger.debug(`[DEBUG] Task ${task.task_id} (tab ${tabId}) completed: "${finalState}"`, { error });
+  appendLog('task_finished', { taskId: task.task_id, tabId, state: finalState, error });
 
   const isSuccess = ['completed', 'already_connected', 'already_pending'].includes(finalState);
 
-  // 1. Direct Backend Callback (Highly Resilient to tab closures)
-  if (current.callback_url) {
+  // 1. Direct Backend Webhook
+  if (task.callback_url) {
     try {
       const data = await chrome.storage.local.get(['authToken']);
       if (data.authToken) {
-        Logger.debug(`[DEBUG] Firing direct webhook to backend: ${current.callback_url}`);
-        fetch(current.callback_url, {
+        Logger.debug(`[DEBUG] Webhook → ${task.callback_url}`);
+        fetch(task.callback_url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -284,7 +380,7 @@ async function handleTaskCompletion(finalState, error = null) {
           },
           body: JSON.stringify({
             state: finalState,
-            task_id: current.task_id,
+            task_id: task.task_id,
             error: error || null
           })
         }).catch(err => Logger.error('[DEBUG] Webhook fetch failed:', err));
@@ -294,32 +390,31 @@ async function handleTaskCompletion(finalState, error = null) {
     }
   }
 
-  // 2. Relay to Frontend (for real-time UI updates)
-  if (current.referral_id) {
+  // 2. Relay to Frontend for real-time UI update
+  if (task.referral_id) {
     notifyFrontendTaskComplete({
-      task_id: current.task_id,
-      referral_id: current.referral_id,
+      task_id: task.task_id,
+      referral_id: task.referral_id,
       state: finalState,
       success: isSuccess,
       ...(error ? { error } : {}),
     });
   }
 
+  // Clean up after a short delay
   setTimeout(() => {
-    if (activeTask && activeTask.task_id === current.task_id) {
-      activeTask = null;
-      activeTabId = null;
-    }
+    if (tabId) tasksByTabId.delete(tabId);
   }, 3000);
 }
 
-// Tab listener to handle manual tab close during task
+// Tab close listener
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (activeTabId && tabId === activeTabId && activeTask) {
-    if (!['completed', 'already_connected', 'already_pending', 'failed'].includes(activeTask.state)) {
-      Logger.warn('[DEBUG] Target automation tab closed manually before completion:', tabId);
-      appendLog('task_tab_closed_manually', { taskId: activeTask.task_id });
-      handleTaskCompletion('closed_without_send', 'Target tab was closed before completing task');
+  if (tasksByTabId.has(tabId)) {
+    const task = tasksByTabId.get(tabId);
+    if (!['completed', 'already_connected', 'already_pending', 'failed'].includes(task.state)) {
+      Logger.warn('[DEBUG] Automation tab closed before completion:', tabId);
+      appendLog('task_tab_closed_manually', { taskId: task.task_id, tabId });
+      handleTaskCompletion(tabId, 'closed_without_send', 'Tab was closed before completing task');
     }
   }
 });
