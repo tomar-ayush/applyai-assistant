@@ -70,8 +70,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.get(['authToken', 'apiUrl'], async (data) => {
       const token = data.authToken;
       const baseUrl = (data.apiUrl || 'http://localhost:8000').replace(/\/$/, '');
-      const aiParse = aiParseCheck ? aiParseCheck.checked : true;
-      const isApplied = appliedCheck ? appliedCheck.checked : false;
+      const aiParse = aiParseCheck ? Boolean(aiParseCheck.checked) : true;
+      const isApplied = appliedCheck ? Boolean(appliedCheck.checked) : false;
 
       if (!token) {
         showStatus('Extension not paired. Please login to the Web App first.', 'error');
