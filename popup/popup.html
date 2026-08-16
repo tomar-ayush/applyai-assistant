@@ -44,6 +44,26 @@
       </div>
     </section>
 
+    <!-- Quick Add Job Card -->
+    <section class="card add-job-card" id="addJobCard">
+      <div class="card-header">
+        <span class="card-title">Quick Add Job</span>
+      </div>
+      <div class="card-body">
+        <div class="form-group">
+          <input type="text" id="jobUrlInput" placeholder="Paste Job URL (Workday/LinkedIn...)" class="input-field" />
+        </div>
+        <div class="form-group flex-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="aiParseCheck" checked />
+            <span>Enable AI Parsing</span>
+          </label>
+          <button id="addJobBtn" class="btn-sm">Add Job</button>
+        </div>
+        <div id="addJobStatus" class="status-msg hidden"></div>
+      </div>
+    </section>
+
     <!-- Active Tasks Card -->
     <section class="card task-card" id="taskCard">
       <div class="card-header">

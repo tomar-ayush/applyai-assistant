@@ -32,6 +32,95 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // Quick Add Job logic
+  const jobUrlInput = document.getElementById('jobUrlInput');
+  const aiParseCheck = document.getElementById('aiParseCheck');
+  const addJobBtn = document.getElementById('addJobBtn');
+  const addJobStatus = document.getElementById('addJobStatus');
+
+  // Query active tab's URL to auto-populate the input
+  if (chrome.tabs && chrome.tabs.query) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs?.[0];
+      if (activeTab && activeTab.url && activeTab.url.startsWith('http')) {
+        if (jobUrlInput) {
+          jobUrlInput.value = activeTab.url;
+        }
+      }
+    });
+  }
+
+  addJobBtn.addEventListener('click', async () => {
+    const jobUrl = jobUrlInput.value.trim();
+    if (!jobUrl) {
+      showStatus('Please enter or paste a job URL.', 'error');
+      return;
+    }
+
+    if (!jobUrl.startsWith('http://') && !jobUrl.startsWith('https://')) {
+      showStatus('Please enter a valid HTTP/HTTPS URL.', 'error');
+      return;
+    }
+
+    addJobBtn.disabled = true;
+    addJobBtn.textContent = 'Adding...';
+    hideStatus();
+
+    chrome.storage.local.get(['authToken', 'apiUrl'], async (data) => {
+      const token = data.authToken;
+      const baseUrl = (data.apiUrl || 'http://localhost:8000').replace(/\/$/, '');
+      const aiParse = aiParseCheck.checked;
+
+      if (!token) {
+        showStatus('Extension not paired. Please login to the Web App first.', 'error');
+        addJobBtn.disabled = false;
+        addJobBtn.textContent = 'Add Job';
+        return;
+      }
+
+      try {
+        const response = await fetch(`${baseUrl}/jobs`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            workday_url: jobUrl,
+            ai: aiParse
+          })
+        });
+
+        if (response.status === 201 || response.ok) {
+          const resData = await response.json();
+          showStatus('Job successfully added to ApplyAI!', 'success');
+          jobUrlInput.value = '';
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          const errMsg = errData.detail || `Server returned ${response.status}`;
+          showStatus(`Failed to add job: ${errMsg}`, 'error');
+        }
+      } catch (err) {
+        showStatus('Network error. Is the ApplyAI backend running?', 'error');
+      } finally {
+        addJobBtn.disabled = false;
+        addJobBtn.textContent = 'Add Job';
+      }
+    });
+  });
+
+  function showStatus(message, type) {
+    if (!addJobStatus) return;
+    addJobStatus.textContent = message;
+    addJobStatus.className = `status-msg ${type}`;
+  }
+
+  function hideStatus() {
+    if (!addJobStatus) return;
+    addJobStatus.className = 'status-msg hidden';
+    addJobStatus.textContent = '';
+  }
+
   // Query background for current status & state
   function fetchStatus() {
     chrome.runtime.sendMessage({ type: 'POPUP_GET_STATUS' }, (response) => {

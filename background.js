@@ -151,6 +151,7 @@ function handleAuthSync(request, sendResponse) {
     userId: userId || null,
     userEmail: userEmail || null,
     defaultCallbackUrl: callbackUrl || null,
+    apiUrl: callbackUrl || null,
     lastSyncedAt: new Date().toISOString(),
   }, () => {
     appendLog('user_auth_synced', { userId, userEmail });
@@ -288,7 +289,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // POPUP_GET_STATUS
   if (request.type === 'POPUP_GET_STATUS') {
-    chrome.storage.local.get(['authToken', 'userId', 'userEmail', 'logs'], (data) => {
+    chrome.storage.local.get(['authToken', 'userId', 'userEmail', 'logs', 'apiUrl'], (data) => {
       const activeTasks = [];
       for (const [tid, t] of tasksByTabId) {
         activeTasks.push({
@@ -303,6 +304,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         isPaired: Boolean(data.authToken),
         userId: data.userId || null,
         userEmail: data.userEmail || null,
+        apiUrl: data.apiUrl || null,
         activeTask: activeTasks.length > 0 ? activeTasks[activeTasks.length - 1] : null,
         activeTasks,
         logs: data.logs || [],

@@ -3,11 +3,11 @@
 Logger.debug('[DEBUG] ApplyAI Extension Bridge initialized on domain:', window.location.origin);
 
 // Announce extension presence to Web App window
-window.postMessage({ type: 'APPLYAI_EXTENSION_INSTALLED', version: '1.0.0' }, '*');
+window.postMessage({ type: 'APPLYAI_EXTENSION_INSTALLED', version: '1.0.0' }, window.location.origin);
 
 // 1. Listen for window.postMessage events from Frontend React app -> forward to background worker
 window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
+  if (event.source !== window || event.origin !== window.location.origin) return;
   const data = event.data;
 
   if (!data || typeof data !== 'object') return;
@@ -26,7 +26,7 @@ window.addEventListener('message', (event) => {
             success: false,
             error: lastErr.message,
             originalType: data.type,
-          }, '*');
+          }, window.location.origin);
           return;
         }
 
@@ -36,7 +36,7 @@ window.addEventListener('message', (event) => {
           success: true,
           response,
           originalType: data.type,
-        }, '*');
+        }, window.location.origin);
       });
     } catch (err) {
       Logger.error('[DEBUG] Bridge exception during message forwarding:', err);
