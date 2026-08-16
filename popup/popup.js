@@ -35,6 +35,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Quick Add Job logic
   const jobUrlInput = document.getElementById('jobUrlInput');
   const aiParseCheck = document.getElementById('aiParseCheck');
+  const appliedCheck = document.getElementById('appliedCheck');
   const addJobBtn = document.getElementById('addJobBtn');
   const addJobStatus = document.getElementById('addJobStatus');
 
@@ -69,7 +70,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.get(['authToken', 'apiUrl'], async (data) => {
       const token = data.authToken;
       const baseUrl = (data.apiUrl || 'http://localhost:8000').replace(/\/$/, '');
-      const aiParse = aiParseCheck.checked;
+      const aiParse = aiParseCheck ? aiParseCheck.checked : true;
+      const isApplied = appliedCheck ? appliedCheck.checked : false;
 
       if (!token) {
         showStatus('Extension not paired. Please login to the Web App first.', 'error');
@@ -87,7 +89,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           },
           body: JSON.stringify({
             workday_url: jobUrl,
-            ai: aiParse
+            ai: aiParse,
+            applied: isApplied
           })
         });
 
